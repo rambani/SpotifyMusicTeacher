@@ -68,36 +68,52 @@ class SpotifyClient:
     def get_audio_features(self, track_id: str) -> Optional[dict]:
         """
         Get audio features for a track.
+        Note: Spotify restricted this endpoint for new apps in late 2024.
+        Returns default values if the API call fails.
 
         Args:
             track_id: Spotify track ID
 
         Returns:
-            Audio features dictionary or None
+            Audio features dictionary with defaults if API fails
         """
+        # Default values to use when API is restricted
+        defaults = {
+            "tempo": 120,
+            "key": 0,  # C
+            "mode": 1,  # Major
+            "time_signature": 4,
+            "energy": 0.5,
+            "danceability": 0.5,
+            "instrumentalness": 0.0,
+            "acousticness": 0.5,
+        }
+
         if not self._client:
-            return None
+            return defaults
 
         try:
             features = self._client.audio_features([track_id])
             if features and features[0]:
                 return {
-                    "tempo": features[0].get("tempo"),
-                    "key": features[0].get("key"),
-                    "mode": features[0].get("mode"),  # 0 = minor, 1 = major
-                    "time_signature": features[0].get("time_signature"),
-                    "energy": features[0].get("energy"),
-                    "danceability": features[0].get("danceability"),
-                    "instrumentalness": features[0].get("instrumentalness"),
-                    "acousticness": features[0].get("acousticness"),
+                    "tempo": features[0].get("tempo", 120),
+                    "key": features[0].get("key", 0),
+                    "mode": features[0].get("mode", 1),
+                    "time_signature": features[0].get("time_signature", 4),
+                    "energy": features[0].get("energy", 0.5),
+                    "danceability": features[0].get("danceability", 0.5),
+                    "instrumentalness": features[0].get("instrumentalness", 0.0),
+                    "acousticness": features[0].get("acousticness", 0.5),
                 }
-            return None
+            return defaults
         except Exception:
-            return None
+            # API restricted for new apps - return defaults
+            return defaults
 
     def get_audio_analysis(self, track_id: str) -> Optional[dict]:
         """
         Get detailed audio analysis for a track.
+        Note: Spotify restricted this endpoint for new apps in late 2024.
 
         Args:
             track_id: Spotify track ID
@@ -132,6 +148,7 @@ class SpotifyClient:
                 ],
             }
         except Exception:
+            # API restricted for new apps - return None (we'll use defaults elsewhere)
             return None
 
     def _parse_track(self, track: dict) -> dict:
