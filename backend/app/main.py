@@ -299,76 +299,85 @@ async def get_sheet_music(
     skill_level: str = Query("beginner", description="Skill level"),
 ):
     """Get sheet music for a processed track."""
-    # Check if track was processed
-    if track_id in processing_jobs:
-        job = processing_jobs[track_id]
-        if job.status != "completed":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track processing not complete. Status: {job.status}",
-            )
+    try:
+        # Get track info
+        spotify = get_spotify_client()
+        is_demo = track_id.startswith("demo_")
 
-    # Get transcription
-    transcriber = get_transcriber()
-    settings = get_settings()
-    midi_path = Path(settings.midi_cache_dir) / f"{track_id}.mid"
+        if spotify.is_configured and not is_demo:
+            track = spotify.get_track(track_id)
+            audio_features = spotify.get_audio_features(track_id)
+        else:
+            track = _get_demo_track(track_id)
+            audio_features = _get_demo_audio_features()
 
-    # Try to load cached transcription or generate from demo
-    spotify = get_spotify_client()
-    if spotify.is_configured:
-        track = spotify.get_track(track_id)
-        audio_features = spotify.get_audio_features(track_id)
-    else:
-        track = _get_demo_track(track_id)
-        audio_features = _get_demo_audio_features()
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
 
-    if not track:
-        raise HTTPException(status_code=404, detail="Track not found")
+        # Get tempo and time signature from audio features
+        tempo = audio_features.get("tempo", 120) if audio_features else 120
+        time_sig = audio_features.get("time_signature", 4) if audio_features else 4
 
-    # Get tempo and time signature from audio features
-    tempo = audio_features.get("tempo", 120) if audio_features else 120
-    time_sig = audio_features.get("time_signature", 4) if audio_features else 4
+        # Generate sheet music
+        generator = get_sheet_generator()
 
-    # Generate sheet music
-    generator = get_sheet_generator()
+        # For demo tracks, always use demo notes
+        if is_demo:
+            notes = _generate_demo_notes(tempo)
+        else:
+            # Check if track was processed
+            if track_id in processing_jobs:
+                job = processing_jobs[track_id]
+                if job.status != "completed":
+                    # Not processed yet, use demo notes
+                    notes = _generate_demo_notes(tempo)
+                else:
+                    # Try to get real transcription
+                    settings = get_settings()
+                    audio_cache = Path(settings.audio_cache_dir) / f"{track_id}.mp3"
+                    preview_cache = Path(settings.audio_cache_dir) / f"{track_id}_preview.mp3"
 
-    # Try to get cached notes or generate demo
-    audio_cache = Path(settings.audio_cache_dir) / f"{track_id}.mp3"
-    preview_cache = Path(settings.audio_cache_dir) / f"{track_id}_preview.mp3"
+                    if audio_cache.exists() or preview_cache.exists():
+                        transcriber = get_transcriber()
+                        audio_path = str(audio_cache if audio_cache.exists() else preview_cache)
+                        transcription = await transcriber.transcribe_audio(audio_path, track_id)
+                        notes = transcription.get("notes", [])
+                    else:
+                        notes = _generate_demo_notes(tempo)
+            else:
+                # No processing job, use demo notes
+                notes = _generate_demo_notes(tempo)
 
-    if midi_path.exists() or audio_cache.exists() or preview_cache.exists():
-        # Use real transcription
-        audio_path = str(audio_cache if audio_cache.exists() else preview_cache)
-        transcription = await transcriber.transcribe_audio(audio_path, track_id)
-        notes = transcription.get("notes", [])
-    else:
-        # Generate demo notes
-        notes = _generate_demo_notes(tempo)
+        # Generate different formats
+        sheet_music = generator.generate_sheet_music(
+            notes,
+            tempo=tempo,
+            time_signature=(time_sig, 4),
+        )
 
-    # Generate different formats
-    sheet_music = generator.generate_sheet_music(
-        notes,
-        tempo=tempo,
-        time_signature=(time_sig, 4),
-    )
+        guitar_tab = generator.generate_guitar_tab(notes, tempo)
+        piano_guide = generator.generate_piano_guide(notes, tempo)
+        simplified_guide = generator.generate_simplified_guide(
+            notes,
+            instrument=instrument,
+            tempo=tempo,
+            skill_level=skill_level,
+        )
 
-    guitar_tab = generator.generate_guitar_tab(notes, tempo)
-    piano_guide = generator.generate_piano_guide(notes, tempo)
-    simplified_guide = generator.generate_simplified_guide(
-        notes,
-        instrument=instrument,
-        tempo=tempo,
-        skill_level=skill_level,
-    )
+        return SheetMusicResponse(
+            track_id=track_id,
+            instrument=instrument,
+            sheet_music=sheet_music,
+            guitar_tab=guitar_tab,
+            piano_guide=piano_guide,
+            simplified_guide=simplified_guide,
+        )
 
-    return SheetMusicResponse(
-        track_id=track_id,
-        instrument=instrument,
-        sheet_music=sheet_music,
-        guitar_tab=guitar_tab,
-        piano_guide=piano_guide,
-        simplified_guide=simplified_guide,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating sheet music: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate sheet music: {str(e)}")
 
 
 @app.get("/api/stems/{track_id}")
