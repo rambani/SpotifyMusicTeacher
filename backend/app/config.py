@@ -10,10 +10,10 @@ class Settings(BaseSettings):
     # Spotify API credentials
     spotify_client_id: str = ""
     spotify_client_secret: str = ""
-    spotify_redirect_uri: str = "http://localhost:8000/callback"
+    spotify_redirect_uri: str = "http://127.0.0.1:8000/callback"
 
     # Application settings
-    app_name: str = "Spotify Music Teacher"
+    app_name: str = "Smart Podcast Playlists"
     debug: bool = True
 
     # Audio processing settings

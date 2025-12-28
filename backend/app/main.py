@@ -1,20 +1,16 @@
-"""FastAPI application for Spotify Music Teacher."""
-import os
+"""Smart Podcast Playlists - Backend API."""
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
 from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Query, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from .config import get_settings
 from .spotify import get_spotify_client
-from .audio_processor import get_audio_processor, get_audio_downloader
-from .transcriber import get_transcriber
-from .sheet_generator import get_sheet_generator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,92 +18,72 @@ logger = logging.getLogger(__name__)
 
 
 # Request/Response models
-class TrackSearchResponse(BaseModel):
-    """Response model for track search."""
-    tracks: list[dict]
-    query: str
-    count: int
+class CreatePlaylistRequest(BaseModel):
+    name: str
+    description: str = ""
+    show_ids: list[str] = []
+    episodes_per_show: int = 3
 
 
-class TrackDetailResponse(BaseModel):
-    """Response model for track details."""
-    track: dict
-    audio_features: Optional[dict] = None
-    audio_analysis: Optional[dict] = None
+class SmartPlaylistConfig(BaseModel):
+    playlist_id: str
+    name: str
+    show_ids: list[str]
+    episodes_per_show: int = 3
+    auto_refresh: bool = True
 
 
-class ProcessingStatus(BaseModel):
-    """Status of audio processing job."""
-    track_id: str
-    status: str  # pending, processing, completed, failed
-    progress: int  # 0-100
-    message: str
-
-
-class SheetMusicRequest(BaseModel):
-    """Request model for sheet music generation."""
-    track_id: str
-    instrument: str = "piano"
-    skill_level: str = "beginner"
-
-
-class SheetMusicResponse(BaseModel):
-    """Response model for sheet music."""
-    track_id: str
-    instrument: str
-    sheet_music: dict
-    guitar_tab: Optional[dict] = None
-    piano_guide: Optional[dict] = None
-    simplified_guide: Optional[dict] = None
-
-
-# Store processing jobs status
-processing_jobs: dict[str, ProcessingStatus] = {}
+# In-memory storage for smart playlist configs (would use database in production)
+smart_playlists: dict[str, SmartPlaylistConfig] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    # Startup
     settings = get_settings()
 
     # Create cache directories
     for cache_dir in [settings.audio_cache_dir, settings.stems_cache_dir, settings.midi_cache_dir]:
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
 
-    logger.info("Spotify Music Teacher API started")
-
+    logger.info("Smart Podcast Playlists API started")
     yield
-
-    # Shutdown
-    logger.info("Spotify Music Teacher API shutting down")
+    logger.info("Smart Podcast Playlists API shutting down")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="Spotify Music Teacher API",
-    description="API for generating sheet music and learning guides from Spotify tracks",
-    version="1.0.0",
+    title="Smart Podcast Playlists API",
+    description="Create auto-refreshing podcast playlists on Spotify",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 # Configure CORS
-settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# Helper to get access token from header
+def get_access_token(authorization: str = Header(None)) -> Optional[str]:
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[7:]
+    return None
+
+
+# ============ Health & Info ============
+
 @app.get("/")
 async def root():
     """Root endpoint with API info."""
     return {
-        "name": "Spotify Music Teacher API",
-        "version": "1.0.0",
+        "name": "Smart Podcast Playlists API",
+        "version": "2.0.0",
         "status": "running",
         "docs": "/docs",
     }
@@ -123,410 +99,281 @@ async def health_check():
     }
 
 
-# Spotify endpoints
-@app.get("/api/search", response_model=TrackSearchResponse)
-async def search_tracks(
-    q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(20, ge=1, le=50, description="Maximum results"),
-):
-    """Search for tracks on Spotify."""
-    spotify = get_spotify_client()
+# ============ Authentication ============
 
+@app.get("/api/auth/login")
+async def login():
+    """Get Spotify authorization URL."""
+    spotify = get_spotify_client()
     if not spotify.is_configured:
-        # Return demo data if Spotify is not configured
-        return TrackSearchResponse(
-            tracks=_get_demo_tracks(q),
-            query=q,
-            count=len(_get_demo_tracks(q)),
-        )
+        raise HTTPException(status_code=500, detail="Spotify not configured")
 
-    tracks = spotify.search_tracks(q, limit)
-    return TrackSearchResponse(
-        tracks=tracks,
-        query=q,
-        count=len(tracks),
+    auth_url = spotify.get_auth_url()
+    return {"auth_url": auth_url}
+
+
+@app.get("/callback")
+async def spotify_callback(code: str = None, error: str = None):
+    """Handle Spotify OAuth callback (main callback URL from Spotify)."""
+    if error:
+        return RedirectResponse(url=f"http://localhost:3000/?error={error}")
+
+    if not code:
+        return RedirectResponse(url="http://localhost:3000/?error=no_code")
+
+    spotify = get_spotify_client()
+    token_info = spotify.exchange_code(code)
+
+    if not token_info:
+        return RedirectResponse(url="http://localhost:3000/?error=token_failed")
+
+    # Redirect to frontend with tokens
+    access_token = token_info.get("access_token", "")
+    refresh_token = token_info.get("refresh_token", "")
+    expires_in = token_info.get("expires_in", 3600)
+
+    return RedirectResponse(
+        url=f"http://localhost:3000/callback?access_token={access_token}&refresh_token={refresh_token}&expires_in={expires_in}"
     )
 
 
-@app.get("/api/tracks/{track_id}", response_model=TrackDetailResponse)
-async def get_track(track_id: str):
-    """Get detailed information about a track."""
+@app.get("/api/auth/callback")
+async def auth_callback(code: str = None, error: str = None):
+    """Handle Spotify OAuth callback (API version)."""
+    return await spotify_callback(code, error)
+
+
+@app.post("/api/auth/refresh")
+async def refresh_access_token(refresh_token: str):
+    """Refresh an access token."""
+    spotify = get_spotify_client()
+    token_info = spotify.refresh_token(refresh_token)
+
+    if not token_info:
+        raise HTTPException(status_code=401, detail="Failed to refresh token")
+
+    return token_info
+
+
+@app.get("/api/auth/me")
+async def get_current_user(authorization: str = Header(None)):
+    """Get the current user's profile."""
+    access_token = get_access_token(authorization)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    spotify = get_spotify_client()
+    user = spotify.get_current_user(access_token)
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    return user
+
+
+# ============ Podcasts ============
+
+@app.get("/api/podcasts/search")
+async def search_podcasts(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(20, ge=1, le=50),
+    authorization: str = Header(None),
+):
+    """Search for podcasts."""
+    access_token = get_access_token(authorization)
     spotify = get_spotify_client()
 
-    if not spotify.is_configured:
-        # Return demo data
-        demo = _get_demo_track(track_id)
-        if demo:
-            return TrackDetailResponse(track=demo)
-        raise HTTPException(status_code=404, detail="Track not found")
-
-    track = spotify.get_track(track_id)
-    if not track:
-        raise HTTPException(status_code=404, detail="Track not found")
-
-    audio_features = spotify.get_audio_features(track_id)
-    audio_analysis = spotify.get_audio_analysis(track_id)
-
-    return TrackDetailResponse(
-        track=track,
-        audio_features=audio_features,
-        audio_analysis=audio_analysis,
-    )
+    shows = spotify.search_podcasts(q, limit, access_token)
+    return {"shows": shows, "query": q, "count": len(shows)}
 
 
-# Processing endpoints
-@app.post("/api/process/{track_id}")
-async def start_processing(
-    track_id: str,
-    background_tasks: BackgroundTasks,
-    use_preview: bool = Query(True, description="Use Spotify preview (faster) or full song"),
-):
-    """Start processing a track for sheet music generation."""
+@app.get("/api/podcasts/saved")
+async def get_saved_podcasts(authorization: str = Header(None)):
+    """Get user's saved podcasts."""
+    access_token = get_access_token(authorization)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    spotify = get_spotify_client()
+    shows = spotify.get_user_saved_shows(access_token)
+    return {"shows": shows, "count": len(shows)}
+
+
+@app.get("/api/podcasts/{show_id}")
+async def get_podcast(show_id: str, authorization: str = Header(None)):
+    """Get a podcast by ID."""
+    access_token = get_access_token(authorization)
     spotify = get_spotify_client()
 
-    # Get track info
-    if spotify.is_configured:
-        track = spotify.get_track(track_id)
-    else:
-        track = _get_demo_track(track_id)
+    show = spotify.get_show(show_id, access_token)
+    if not show:
+        raise HTTPException(status_code=404, detail="Podcast not found")
 
-    if not track:
-        raise HTTPException(status_code=404, detail="Track not found")
-
-    # Check if already processing
-    if track_id in processing_jobs:
-        job = processing_jobs[track_id]
-        if job.status in ["pending", "processing"]:
-            return {"message": "Already processing", "status": job}
-
-    # Create processing job
-    processing_jobs[track_id] = ProcessingStatus(
-        track_id=track_id,
-        status="pending",
-        progress=0,
-        message="Queued for processing",
-    )
-
-    # Start background processing
-    background_tasks.add_task(
-        _process_track,
-        track_id,
-        track,
-        use_preview,
-    )
-
-    return {"message": "Processing started", "status": processing_jobs[track_id]}
+    return show
 
 
-@app.get("/api/process/{track_id}/status")
-async def get_processing_status(track_id: str):
-    """Get the status of a processing job."""
-    if track_id not in processing_jobs:
-        raise HTTPException(status_code=404, detail="No processing job found")
-
-    return processing_jobs[track_id]
-
-
-async def _process_track(track_id: str, track: dict, use_preview: bool):
-    """Background task to process a track."""
-    job = processing_jobs[track_id]
-
-    try:
-        # Update status
-        job.status = "processing"
-        job.progress = 10
-        job.message = "Downloading audio..."
-
-        downloader = get_audio_downloader()
-
-        # Download audio
-        if use_preview and track.get("preview_url"):
-            audio_path = await downloader.download_preview(
-                track["preview_url"],
-                track_id,
-            )
-        else:
-            # Try to download from YouTube
-            search_query = f"{track['name']} {track['artist_names']}"
-            audio_path = await downloader.download_from_youtube(
-                search_query,
-                track_id,
-            )
-
-        if not audio_path:
-            job.status = "failed"
-            job.message = "Failed to download audio"
-            return
-
-        job.progress = 30
-        job.message = "Separating instruments..."
-
-        # Separate stems (optional - skip for preview)
-        processor = get_audio_processor()
-        try:
-            stems = await processor.separate_stems(audio_path, track_id)
-            job.progress = 60
-        except Exception as e:
-            logger.warning(f"Stem separation failed: {e}, continuing with original audio")
-            stems = {"mixed": audio_path}
-            job.progress = 50
-
-        job.message = "Transcribing audio to notes..."
-
-        # Transcribe audio
-        transcriber = get_transcriber()
-        transcription = await transcriber.transcribe_audio(audio_path, track_id)
-
-        job.progress = 90
-        job.message = "Generating sheet music..."
-
-        # Store transcription result
-        job.progress = 100
-        job.status = "completed"
-        job.message = "Processing complete"
-
-    except Exception as e:
-        logger.error(f"Processing failed: {e}")
-        job.status = "failed"
-        job.message = str(e)
-
-
-# Sheet music endpoints
-@app.get("/api/sheet-music/{track_id}")
-async def get_sheet_music(
-    track_id: str,
-    instrument: str = Query("piano", description="Target instrument"),
-    skill_level: str = Query("beginner", description="Skill level"),
+@app.get("/api/podcasts/{show_id}/episodes")
+async def get_podcast_episodes(
+    show_id: str,
+    limit: int = Query(10, ge=1, le=50),
+    authorization: str = Header(None),
 ):
-    """Get sheet music for a processed track."""
-    try:
-        # Get track info
-        spotify = get_spotify_client()
-        is_demo = track_id.startswith("demo_")
+    """Get episodes for a podcast."""
+    access_token = get_access_token(authorization)
+    spotify = get_spotify_client()
 
-        if spotify.is_configured and not is_demo:
-            track = spotify.get_track(track_id)
-            audio_features = spotify.get_audio_features(track_id)
-        else:
-            track = _get_demo_track(track_id)
-            audio_features = _get_demo_audio_features()
-
-        if not track:
-            raise HTTPException(status_code=404, detail="Track not found")
-
-        # Get tempo and time signature from audio features
-        tempo = audio_features.get("tempo", 120) if audio_features else 120
-        time_sig = audio_features.get("time_signature", 4) if audio_features else 4
-
-        # Generate sheet music
-        generator = get_sheet_generator()
-
-        # For demo tracks, always use demo notes
-        if is_demo:
-            notes = _generate_demo_notes(tempo)
-        else:
-            # Check if track was processed
-            if track_id in processing_jobs:
-                job = processing_jobs[track_id]
-                if job.status != "completed":
-                    # Not processed yet, use demo notes
-                    notes = _generate_demo_notes(tempo)
-                else:
-                    # Try to get real transcription
-                    settings = get_settings()
-                    audio_cache = Path(settings.audio_cache_dir) / f"{track_id}.mp3"
-                    preview_cache = Path(settings.audio_cache_dir) / f"{track_id}_preview.mp3"
-
-                    if audio_cache.exists() or preview_cache.exists():
-                        transcriber = get_transcriber()
-                        audio_path = str(audio_cache if audio_cache.exists() else preview_cache)
-                        transcription = await transcriber.transcribe_audio(audio_path, track_id)
-                        notes = transcription.get("notes", [])
-                    else:
-                        notes = _generate_demo_notes(tempo)
-            else:
-                # No processing job, use demo notes
-                notes = _generate_demo_notes(tempo)
-
-        # Generate different formats
-        sheet_music = generator.generate_sheet_music(
-            notes,
-            tempo=tempo,
-            time_signature=(time_sig, 4),
-        )
-
-        guitar_tab = generator.generate_guitar_tab(notes, tempo)
-        piano_guide = generator.generate_piano_guide(notes, tempo)
-        simplified_guide = generator.generate_simplified_guide(
-            notes,
-            instrument=instrument,
-            tempo=tempo,
-            skill_level=skill_level,
-        )
-
-        return SheetMusicResponse(
-            track_id=track_id,
-            instrument=instrument,
-            sheet_music=sheet_music,
-            guitar_tab=guitar_tab,
-            piano_guide=piano_guide,
-            simplified_guide=simplified_guide,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating sheet music: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate sheet music: {str(e)}")
+    episodes = spotify.get_show_episodes(show_id, limit, access_token)
+    return {"episodes": episodes, "count": len(episodes)}
 
 
-@app.get("/api/stems/{track_id}")
-async def get_stems(track_id: str):
-    """Get available stems for a processed track."""
-    settings = get_settings()
-    stems_dir = Path(settings.stems_cache_dir) / track_id
+# ============ Playlists ============
 
-    if not stems_dir.exists():
-        return {"stems": [], "message": "No stems available. Process the track first."}
+@app.get("/api/playlists")
+async def get_playlists(authorization: str = Header(None)):
+    """Get user's playlists."""
+    access_token = get_access_token(authorization)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
-    processor = get_audio_processor()
-    stems = processor._get_cached_stems(stems_dir)
+    spotify = get_spotify_client()
+    playlists = spotify.get_user_playlists(access_token)
+    return {"playlists": playlists, "count": len(playlists)}
+
+
+@app.post("/api/playlists/smart")
+async def create_smart_playlist(
+    request: CreatePlaylistRequest,
+    authorization: str = Header(None),
+):
+    """Create a smart auto-refreshing podcast playlist."""
+    access_token = get_access_token(authorization)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    spotify = get_spotify_client()
+
+    # Create the playlist
+    playlist = spotify.create_playlist(
+        access_token,
+        name=request.name,
+        description=request.description or "Smart podcast playlist - Auto-refreshes with latest episodes",
+        public=False,
+    )
+
+    if not playlist:
+        raise HTTPException(status_code=500, detail="Failed to create playlist")
+
+    # Add initial episodes from selected shows
+    all_episode_uris = []
+    for show_id in request.show_ids:
+        episodes = spotify.get_show_episodes(show_id, request.episodes_per_show, access_token)
+        all_episode_uris.extend([ep["uri"] for ep in episodes])
+
+    if all_episode_uris:
+        spotify.add_episodes_to_playlist(access_token, playlist["id"], all_episode_uris)
+
+    # Save smart playlist config
+    config = SmartPlaylistConfig(
+        playlist_id=playlist["id"],
+        name=request.name,
+        show_ids=request.show_ids,
+        episodes_per_show=request.episodes_per_show,
+        auto_refresh=True,
+    )
+    smart_playlists[playlist["id"]] = config
 
     return {
-        "stems": list(stems.keys()),
-        "paths": stems,
+        "playlist": playlist,
+        "config": config,
+        "episodes_added": len(all_episode_uris),
     }
 
 
-@app.get("/api/stems/{track_id}/{stem_name}")
-async def get_stem_file(track_id: str, stem_name: str):
-    """Download a specific stem file."""
-    processor = get_audio_processor()
-    stem_path = await processor.get_stem(track_id, stem_name)
+@app.get("/api/playlists/smart")
+async def get_smart_playlists(authorization: str = Header(None)):
+    """Get all smart playlist configurations with playlist info."""
+    access_token = get_access_token(authorization)
 
-    if not stem_path or not Path(stem_path).exists():
-        raise HTTPException(status_code=404, detail="Stem not found")
+    # Return configs merged with playlist data
+    result = []
+    spotify = get_spotify_client()
 
-    return FileResponse(
-        stem_path,
-        media_type="audio/wav",
-        filename=f"{track_id}_{stem_name}.wav",
-    )
-
-
-# Demo data for when Spotify is not configured
-def _get_demo_tracks(query: str) -> list[dict]:
-    """Generate demo tracks for testing without Spotify."""
-    demos = [
-        {
-            "id": "demo_1",
-            "name": "Demo Song - Easy",
-            "artists": [{"id": "artist_1", "name": "Demo Artist"}],
-            "artist_names": "Demo Artist",
-            "album": {
-                "id": "album_1",
-                "name": "Demo Album",
-                "image_url": "https://via.placeholder.com/300x300.png?text=Demo+Album",
+    for playlist_id, config in smart_playlists.items():
+        playlist_data = {
+            "id": config.playlist_id,
+            "name": config.name,
+            "config": {
+                "show_ids": config.show_ids,
+                "episodes_per_show": config.episodes_per_show,
+                "auto_refresh": config.auto_refresh,
             },
-            "duration_ms": 180000,
-            "preview_url": None,
-            "external_url": "#",
-            "popularity": 80,
-        },
-        {
-            "id": "demo_2",
-            "name": "Demo Song - Intermediate",
-            "artists": [{"id": "artist_2", "name": "Another Artist"}],
-            "artist_names": "Another Artist",
-            "album": {
-                "id": "album_2",
-                "name": "Another Album",
-                "image_url": "https://via.placeholder.com/300x300.png?text=Another+Album",
-            },
-            "duration_ms": 240000,
-            "preview_url": None,
-            "external_url": "#",
-            "popularity": 75,
-        },
-    ]
+            "image_url": None,
+            "tracks_total": 0,
+            "uri": f"spotify:playlist:{config.playlist_id}",
+        }
 
-    # Filter by query
-    query_lower = query.lower()
-    return [t for t in demos if query_lower in t["name"].lower() or query_lower in t["artist_names"].lower()] or demos
+        # Try to get actual playlist info from Spotify if authenticated
+        if access_token:
+            try:
+                client = spotify.get_user_client(access_token)
+                pl = client.playlist(playlist_id, fields="images,tracks.total")
+                images = pl.get("images", [])
+                playlist_data["image_url"] = images[0].get("url") if images else None
+                playlist_data["tracks_total"] = pl.get("tracks", {}).get("total", 0)
+            except Exception:
+                pass
+
+        result.append(playlist_data)
+
+    return {"playlists": result, "count": len(result)}
 
 
-def _get_demo_track(track_id: str) -> Optional[dict]:
-    """Get a demo track by ID."""
-    demos = _get_demo_tracks("")
-    for track in demos:
-        if track["id"] == track_id:
-            return track
-    return demos[0] if demos else None
+@app.post("/api/playlists/{playlist_id}/refresh")
+async def refresh_playlist(playlist_id: str, authorization: str = Header(None)):
+    """Manually refresh a smart playlist with latest episodes."""
+    access_token = get_access_token(authorization)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
+    config = smart_playlists.get(playlist_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Smart playlist config not found")
 
-def _get_demo_audio_features() -> dict:
-    """Get demo audio features."""
+    spotify = get_spotify_client()
+
+    # Get current episodes in playlist
+    current_items = spotify.get_playlist_items(access_token, playlist_id)
+    current_uris = {item["uri"] for item in current_items}
+
+    # Get latest episodes from configured shows
+    new_episode_uris = []
+    for show_id in config.show_ids:
+        episodes = spotify.get_show_episodes(show_id, config.episodes_per_show, access_token)
+        for ep in episodes:
+            if ep["uri"] not in current_uris:
+                new_episode_uris.append(ep["uri"])
+
+    # Add new episodes
+    if new_episode_uris:
+        spotify.add_episodes_to_playlist(access_token, playlist_id, new_episode_uris)
+
     return {
-        "tempo": 120,
-        "key": 0,  # C
-        "mode": 1,  # Major
-        "time_signature": 4,
-        "energy": 0.7,
-        "danceability": 0.6,
+        "playlist_id": playlist_id,
+        "new_episodes_added": len(new_episode_uris),
+        "total_episodes": len(current_items) + len(new_episode_uris),
     }
 
 
-def _generate_demo_notes(tempo: float = 120) -> list[dict]:
-    """Generate demo notes for testing sheet music generation."""
-    # Generate a simple C major scale pattern
-    notes = []
-    beat_duration = 60.0 / tempo
+@app.get("/api/playlists/{playlist_id}/items")
+async def get_playlist_items(playlist_id: str, authorization: str = Header(None)):
+    """Get items in a playlist."""
+    access_token = get_access_token(authorization)
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # C major scale: C D E F G A B C
-    scale = [60, 62, 64, 65, 67, 69, 71, 72]  # MIDI notes
-    note_names = ["C4", "D4", "E4", "F4", "G4", "A4", "B4", "C5"]
-
-    time = 0
-    for i, (pitch, name) in enumerate(zip(scale, note_names)):
-        notes.append({
-            "start_time": time,
-            "end_time": time + beat_duration,
-            "pitch": pitch,
-            "velocity": 80,
-            "note_name": name,
-        })
-        time += beat_duration
-
-    # Add descending
-    for i, (pitch, name) in enumerate(zip(reversed(scale[:-1]), reversed(note_names[:-1]))):
-        notes.append({
-            "start_time": time,
-            "end_time": time + beat_duration,
-            "pitch": pitch,
-            "velocity": 80,
-            "note_name": name,
-        })
-        time += beat_duration
-
-    # Add some chords
-    chord_times = [time, time + beat_duration * 2, time + beat_duration * 4]
-    chords = [
-        [(60, "C4"), (64, "E4"), (67, "G4")],  # C major
-        [(65, "F4"), (69, "A4"), (72, "C5")],  # F major
-        [(67, "G4"), (71, "B4"), (74, "D5")],  # G major
-    ]
-
-    for chord_time, chord in zip(chord_times, chords):
-        for pitch, name in chord:
-            notes.append({
-                "start_time": chord_time,
-                "end_time": chord_time + beat_duration * 2,
-                "pitch": pitch,
-                "velocity": 70,
-                "note_name": name,
-            })
-
-    return notes
+    spotify = get_spotify_client()
+    items = spotify.get_playlist_items(access_token, playlist_id)
+    return {"items": items, "count": len(items)}
 
 
 if __name__ == "__main__":

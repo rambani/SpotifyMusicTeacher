@@ -1,26 +1,27 @@
 import React from 'react'
 import { Routes, Route } from 'react-router-dom'
+import { AuthProvider } from './context/AuthContext'
 import Header from './components/Header'
-import HomePage from './pages/HomePage'
-import TrackPage from './pages/TrackPage'
+import LandingPage from './pages/LandingPage'
+import DashboardPage from './pages/DashboardPage'
+import CreatePlaylistPage from './pages/CreatePlaylistPage'
+import CallbackPage from './pages/CallbackPage'
 
 function App() {
   return (
-    <div className="min-h-screen bg-spotify-dark">
-      <Header />
-      <main className="container mx-auto px-4 py-8">
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/track/:trackId" element={<TrackPage />} />
-        </Routes>
-      </main>
-      <footer className="text-center py-6 text-spotify-light text-sm">
-        <p>Spotify Music Teacher - Learn any song with AI-generated guides</p>
-        <p className="mt-2 text-xs opacity-60">
-          Powered by Demucs, Basic-Pitch, and VexFlow
-        </p>
-      </footer>
-    </div>
+    <AuthProvider>
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+        <Header />
+        <main>
+          <Routes>
+            <Route path="/" element={<LandingPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/create" element={<CreatePlaylistPage />} />
+            <Route path="/callback" element={<CallbackPage />} />
+          </Routes>
+        </main>
+      </div>
+    </AuthProvider>
   )
 }
 

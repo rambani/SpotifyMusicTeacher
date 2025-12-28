@@ -13,6 +13,7 @@ services:
     environment:
       - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID:-}
       - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET:-}
+      - SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:8000/callback}
       - DEBUG=true
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
