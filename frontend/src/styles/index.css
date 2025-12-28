@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom styles */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  background-color: #121212;
+  color: #fff;
+}
+
+/* Sheet music container */
+.sheet-music-container {
+  background: #fff;
+  border-radius: 8px;
+  padding: 20px;
+  overflow-x: auto;
+}
+
+.sheet-music-container svg {
+  max-width: 100%;
+}
+
+/* Guitar tab styles */
+.guitar-tab {
+  font-family: 'Courier New', Courier, monospace;
+  background: #1a1a2e;
+  padding: 20px;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.guitar-tab .string {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  border-bottom: 1px solid #444;
+}
+
+.guitar-tab .string-name {
+  width: 30px;
+  font-weight: bold;
+  color: #1DB954;
+}
+
+/* Piano roll styles */
+.piano-key {
+  transition: all 0.15s ease;
+}
+
+.piano-key.white {
+  background: linear-gradient(to bottom, #fff, #f0f0f0);
+  border: 1px solid #ccc;
+}
+
+.piano-key.black {
+  background: linear-gradient(to bottom, #333, #111);
+  border: 1px solid #000;
+}
+
+.piano-key.active {
+  transform: translateY(2px);
+}
+
+.piano-key.white.active {
+  background: linear-gradient(to bottom, #1DB954, #1aa34a);
+}
+
+.piano-key.black.active {
+  background: linear-gradient(to bottom, #1DB954, #1aa34a);
+}
+
+/* Loading animation */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Chord diagram */
+.chord-diagram {
+  display: inline-block;
+  background: #2a2a2a;
+  padding: 10px;
+  border-radius: 8px;
+  margin: 5px;
+}
+
+.chord-diagram .fret {
+  height: 30px;
+  border-bottom: 2px solid #666;
+}
+
+.chord-diagram .string-line {
+  width: 2px;
+  background: #888;
+}
+
+.chord-diagram .finger {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #1DB954;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #282828;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #535353;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #727272;
+}

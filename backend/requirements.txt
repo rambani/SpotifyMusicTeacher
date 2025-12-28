@@ -1,0 +1,30 @@
+# FastAPI and server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Spotify API
+spotipy==2.23.0
+
+# Audio processing
+demucs==4.0.1
+torch>=2.0.0
+torchaudio>=2.0.0
+basic-pitch==0.2.6
+
+# Music/MIDI processing
+midiutil==1.2.1
+music21==9.1.0
+pretty_midi==0.2.10
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+aiofiles==23.2.1
+httpx==0.25.2
+
+# For downloading audio (youtube-dl alternative)
+yt-dlp==2023.11.16
